@@ -123,8 +123,12 @@ type netlinkRouter struct {
 }
 
 func (r *netlinkRouter) updateRouting(newIP net.IP) error {
-	clientIndex := network.ClientIndexFromBondingShootClientIP(newIP)
-	tunnelLink, err := netlink.LinkByName(network.BondIP6TunnelLinkName(clientIndex))
+	//clientIndex := network.ClientIndexFromBondingShootClientIP(newIP)
+	tunnelLink0, err := netlink.LinkByName(network.BondIP6TunnelLinkName(0))
+	if err != nil {
+		return err
+	}
+	tunnelLink1, err := netlink.LinkByName(network.BondIP6TunnelLinkName(1))
 	if err != nil {
 		return err
 	}
@@ -133,7 +137,10 @@ func (r *netlinkRouter) updateRouting(newIP net.IP) error {
 		serviceNetworks []network.CIDR
 		podNetworks     []network.CIDR
 		nodeNetworks    []network.CIDR
+		tunnelLinks     []netlink.Link
 	)
+
+	tunnelLinks = append(tunnelLinks, tunnelLink0, tunnelLink1)
 
 	// we don't need the specific mappings here because the /8 routes encompass all shoot networks
 	_, _, _, err = network.ShootNetworksForNetmap(r.shootPodNetworks, r.shootServiceNetworks, r.shootNodeNetworks)
@@ -175,7 +182,7 @@ func (r *netlinkRouter) updateRouting(newIP net.IP) error {
 
 	for _, nw := range nets {
 		for _, n := range nw {
-			route := routeForNetwork(n.ToIPNet(), tunnelLink)
+			route := routeForNetworkMulti(n.ToIPNet(), tunnelLinks)
 			r.log.Info("replacing route", "route", route, "net", n)
 			err = netlink.RouteReplace(&route)
 			if err != nil {
@@ -191,4 +198,19 @@ func routeForNetwork(net *net.IPNet, tunnelLink netlink.Link) netlink.Route {
 		Dst:       net,
 		LinkIndex: tunnelLink.Attrs().Index,
 	}
+}
+
+func routeForNetworkMulti(net *net.IPNet, tunnelLinks []netlink.Link) netlink.Route {
+
+	route := netlink.Route{
+		Dst: net,
+	}
+
+	for _, n := range tunnelLinks {
+		route.MultiPath = append(route.MultiPath, &netlink.NexthopInfo{
+			LinkIndex: n.Attrs().Index,
+		})
+	}
+
+	return route
 }
