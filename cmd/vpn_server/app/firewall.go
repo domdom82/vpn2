@@ -82,6 +82,7 @@ func runFirewallCommand(log logr.Logger, device, mode string, networks []string,
 	}
 
 	for _, spec := range [][]string{
+		{"-i", device, "-p", "icmpv6", "-j", "ACCEPT"},
 		{"-m", "state", "--state", "RELATED,ESTABLISHED", "-i", device, "-j", "ACCEPT"},
 		{"-i", device, "-j", "DROP"},
 	} {

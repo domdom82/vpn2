@@ -42,6 +42,7 @@ dev {{ .Device }}
      The scripts are run after the tun device has been created (up) or removed (down). */ -}}
 script-security 2
 up "/bin/vpn-server firewall --mode up --device {{ .Device }} --shoot-network={{ networksToString .ShootNetworks }} --seed-pod-network={{ .SeedPodNetwork }}"
+client-connect "/bin/sh -c 'ip addr add fe80::64/64 dev {{ .Device }} scope link || true'"
 down "/bin/vpn-server firewall --mode down --device {{ .Device }}"
 
 {{ if not (eq .StatusPath "") -}}

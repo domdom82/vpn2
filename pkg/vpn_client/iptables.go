@@ -138,12 +138,18 @@ func SetIPTableRules(log logr.Logger, cfg config.VPNClient) error {
 					}
 				}
 			}
-			if protocol == iptables.ProtocolIPv6 {
-				// allow icmp6 for Neighbor Discovery Protocol
-				err = ipTable.AppendUnique("filter", "INPUT", "-i", forwardDevice, "-p", "icmpv6", "-j", "ACCEPT")
-				if err != nil {
-					return err
-				}
+			// allow icmp6 for Neighbor Discovery Protocol
+			err = ipTable.AppendUnique("filter", "INPUT", "-i", forwardDevice, "-p", "icmpv6", "-j", "ACCEPT")
+			if err != nil {
+				return err
+			}
+			ip6Table, err2 := network.NewIPTables(log, iptables.ProtocolIPv6)
+			if err2 != nil {
+				return err2
+			}
+			err = ip6Table.AppendUnique("filter", "INPUT", "-i", forwardDevice, "-p", "icmpv6", "-j", "ACCEPT")
+			if err != nil {
+				return err
 			}
 			err = ipTable.AppendUnique("filter", "INPUT", "-m", "state", "--state", "RELATED,ESTABLISHED", "-i", forwardDevice, "-j", "ACCEPT")
 			if err != nil {
