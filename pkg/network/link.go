@@ -20,6 +20,23 @@ const (
 	ScopeLink     = 253
 )
 
+// flagTypes maps netlink IP address flags to their string representations.
+// See https://github.com/iproute2/iproute2/blob/main/ip/ipaddress.c#L1393-L1413
+var flagTypes = map[int]string{
+	unix.IFA_F_SECONDARY:      "secondary",
+	unix.IFA_F_NODAD:          "nodad",
+	unix.IFA_F_HOMEADDRESS:    "home",
+	unix.IFA_F_DEPRECATED:     "deprecated",
+	unix.IFA_F_OPTIMISTIC:     "optimistic",
+	unix.IFA_F_DADFAILED:      "dadfailed",
+	unix.IFA_F_TENTATIVE:      "tentative",
+	unix.IFA_F_PERMANENT:      "permanent",
+	unix.IFA_F_MANAGETEMPADDR: "mngtmpaddr",
+	unix.IFA_F_NOPREFIXROUTE:  "noprefixroute",
+	unix.IFA_F_MCAUTOJOIN:     "autojoin",
+	unix.IFA_F_STABLE_PRIVACY: "stable-privacy",
+}
+
 // DeleteLinkByName delete a link by name.
 func DeleteLinkByName(name string) error {
 	link, err := netlink.LinkByName(name)
@@ -101,21 +118,6 @@ func GetLinkIPAddrForIP(name string, ip net.IP) (*netlink.Addr, error) {
 func IPAddrFlagsToString(flags int) string {
 	flagsStr := strings.Builder{}
 
-	flagTypes := map[int]string{
-		unix.IFA_F_SECONDARY:      "Secondary",
-		unix.IFA_F_NODAD:          "Nodad",
-		unix.IFA_F_HOMEADDRESS:    "Home",
-		unix.IFA_F_DEPRECATED:     "Deprecated",
-		unix.IFA_F_OPTIMISTIC:     "Optimistic",
-		unix.IFA_F_DADFAILED:      "Dadfailed",
-		unix.IFA_F_TENTATIVE:      "Tentative",
-		unix.IFA_F_PERMANENT:      "Permanent",
-		unix.IFA_F_MANAGETEMPADDR: "Managetempaddr",
-		unix.IFA_F_NOPREFIXROUTE:  "Noprefixroute",
-		unix.IFA_F_MCAUTOJOIN:     "Mcautojoin",
-		unix.IFA_F_STABLE_PRIVACY: "Stable_privacy",
-	}
-
 	for flag, name := range flagTypes {
 		if flags&flag != 0 {
 			flagsStr.WriteString(name + " ")
@@ -123,4 +125,19 @@ func IPAddrFlagsToString(flags int) string {
 	}
 
 	return strings.TrimSpace(flagsStr.String())
+}
+
+// IPAddrFlagsFromString converts a list of human-readable flag strings to their corresponding flag value.
+func IPAddrFlagsFromString(flagsStr []string) int {
+	flags := 0
+
+	for flag, name := range flagTypes {
+		for _, f := range flagsStr {
+			if f == name {
+				flags |= flag
+			}
+		}
+	}
+
+	return flags
 }
