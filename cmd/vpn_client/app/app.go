@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/component-base/version/verflag"
 
+	"github.com/gardener/vpn2/cmd/vpn_client/app/moveip"
 	"github.com/gardener/vpn2/cmd/vpn_client/app/pathcontroller"
 	"github.com/gardener/vpn2/cmd/vpn_client/app/setup"
 	"github.com/gardener/vpn2/pkg/config"
@@ -51,6 +52,7 @@ func NewCommand() *cobra.Command {
 	cmd.PersistentFlags().BoolVar(&pprofEnabled, "enable-pprof", false, "enable pprof for profiling")
 	cmd.AddCommand(pathcontroller.NewCommand())
 	cmd.AddCommand(setup.NewCommand())
+	cmd.AddCommand(moveip.NewCommand())
 	return cmd
 }
 

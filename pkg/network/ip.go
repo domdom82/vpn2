@@ -9,6 +9,8 @@ import (
 	"net"
 	"slices"
 
+	"github.com/vishvananda/netlink"
+
 	"github.com/gardener/vpn2/pkg/constants"
 )
 
@@ -89,4 +91,68 @@ func HAVPNTunnelNetwork(vpnNetworkIP net.IP, vpnIndex int) CIDR {
 		IP:   base,
 		Mask: net.CIDRMask(vpnTunnelPrefixSize, addrLen),
 	}
+}
+
+// MoveIPs moves all IP addresses from source link to target link that are contained in the given CIDR.
+func MoveIPs(cidr, src, tgt string, flags []string) error {
+	_, subnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return err
+	}
+
+	srcLink, err := netlink.LinkByName(src)
+	if err != nil {
+		return fmt.Errorf("failed to get source link %s: %w", src, err)
+	}
+
+	tgtLink, err := netlink.LinkByName(tgt)
+	if err != nil {
+		return fmt.Errorf("failed to get target link %s: %w", tgt, err)
+	}
+
+	srcIPs, err := netlink.AddrList(srcLink, netlink.FAMILY_ALL)
+	if err != nil {
+		return fmt.Errorf("failed to list addresses of link %s: %w", srcLink.Attrs().Name, err)
+	}
+
+	tgtIPs, err := netlink.AddrList(tgtLink, netlink.FAMILY_ALL)
+	if err != nil {
+		return fmt.Errorf("failed to list addresses of link %s: %w", tgtLink.Attrs().Name, err)
+	}
+
+	for _, addrToDel := range srcIPs {
+		if subnet.Contains(addrToDel.IP) {
+			// Copy addrToDel to avoid modifying the original
+			addrToAdd := addrToDel
+
+			// Set flags if provided
+			if len(flags) > 0 {
+				addrToAdd.Flags = IPAddrFlagsFromString(flags)
+			}
+
+			// Remove IP from target link if it already exists
+			for _, existingAddr := range tgtIPs {
+				if addrToAdd.Equal(existingAddr) {
+					err = netlink.AddrDel(tgtLink, &existingAddr)
+					if err != nil {
+						return fmt.Errorf("failed to delete existing IP address %s from link %s: %w", existingAddr.String(), tgt, err)
+					}
+				}
+			}
+
+			// Add IP to target link
+			err = netlink.AddrAdd(tgtLink, &addrToAdd)
+			if err != nil {
+				return fmt.Errorf("failed to add IP address %s to link %s: %w", addrToAdd.String(), tgt, err)
+			}
+
+			// Remove IP from source link
+			err = netlink.AddrDel(srcLink, &addrToDel)
+			if err != nil {
+				return fmt.Errorf("failed to delete IP address %s from link %s: %w", addrToDel.String(), src, err)
+			}
+		}
+
+	}
+	return nil
 }

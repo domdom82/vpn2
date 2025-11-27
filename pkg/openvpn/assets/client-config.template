@@ -47,3 +47,8 @@ remote {{ .Endpoint }}
 script-security 2
 up "/bin/sh -c '/sbin/ip route replace {{ .SeedPodNetwork }} dev $1' -- "
 {{- end }}
+
+{{- if .IsHA }}
+script-security 2
+route-up "/bin/vpn-client move-ip --src {{ .Device }} --flags nodad"
+{{- end }}
