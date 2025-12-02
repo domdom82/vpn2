@@ -75,10 +75,10 @@ func ConfigureBonding(ctx context.Context, log logr.Logger, cfg *config.VPNClien
 		return err
 	}
 
-	tap0Link, err := netlink.LinkByName(constants.TapDevice)
-	if err != nil {
-		return fmt.Errorf("failed to get link %s: %w", constants.TapDevice, err)
-	}
+	//tap0Link, err := netlink.LinkByName(constants.TapDevice)
+	//if err != nil {
+	//	return fmt.Errorf("failed to get link %s: %w", constants.TapDevice, err)
+	//}
 
 	// create bond device
 	linkAttrs := netlink.NewLinkAttrs()
@@ -93,7 +93,7 @@ func ConfigureBonding(ctx context.Context, log logr.Logger, cfg *config.VPNClien
 	bond.FailOverMac = netlink.BOND_FAIL_OVER_MAC_ACTIVE
 	bond.Miimon = 100
 	bond.UseCarrier = 1
-	bond.Primary = tap0Link.Attrs().Index
+	//bond.Primary = tap0Link.Attrs().Index
 	bond.NumPeerNotif = 5
 
 	log.Info("creating new bond device", "link", constants.BondDevice)

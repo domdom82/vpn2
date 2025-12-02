@@ -44,5 +44,9 @@ func KernelSettings(log logr.Logger, cfg config.VPNClient) error {
 	if err := sysctl.Enable("net.ipv6.conf.all.forwarding"); err != nil {
 		return err
 	}
+	// Enable unprivileged ICMP messages.
+	if err := sysctl.Write("net.ipv4.ping_group_range", "0 2147483647"); err != nil {
+		return err
+	}
 	return nil
 }

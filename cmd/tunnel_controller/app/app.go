@@ -11,6 +11,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 
+	"github.com/gardener/vpn2/pkg/config"
 	"github.com/gardener/vpn2/pkg/shoot_client/tunnel"
 	"github.com/gardener/vpn2/pkg/utils"
 )
@@ -27,9 +28,7 @@ func NewCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			c := tunnel.NewController()
-			runReadinessServer(c, log)
-			return c.Run(log)
+			return run(log)
 		},
 	}
 
@@ -44,4 +43,21 @@ func runReadinessServer(c *tunnel.Controller, log logr.Logger) {
 			log.Error(err, "readiness server stopped with error")
 		}
 	}()
+}
+
+func run(log logr.Logger) error {
+	cfg, err := config.GetTunnelControllerConfig(log)
+	if err != nil {
+		return err
+	}
+
+	clientIndex, err := config.ClientIndexFromPodName(cfg.PodName)
+	if err != nil {
+		return err
+	}
+
+	c := tunnel.NewController(clientIndex)
+
+	runReadinessServer(c, log)
+	return c.Run(log)
 }

@@ -28,10 +28,11 @@ const (
 )
 
 // NewController creates a new tunnel controller server.
-func NewController() *Controller {
+func NewController(clientIndex int) *Controller {
 	return &Controller{
 		kubeApiservers: map[string]*kubeApiserverData{},
 		nextClean:      time.Now().Add(cleanUpPeriod),
+		clientIndex:    clientIndex,
 	}
 }
 
@@ -151,6 +152,7 @@ type Controller struct {
 	kubeApiservers map[string]*kubeApiserverData
 	nextClean      time.Time
 	running        bool
+	clientIndex    int
 }
 
 // Run runs the tunnel controller
@@ -162,11 +164,21 @@ func (c *Controller) Run(log logr.Logger) error {
 	if len(ips) == 0 {
 		return fmt.Errorf("no IP addresses found for %s", constants.BondDevice)
 	}
-	if len(ips[0]) != 16 {
-		return fmt.Errorf("expected ipv6 address for %s, got %s", constants.BondDevice, ips[0])
+
+	addr := network.BondingShootClientAddress(&constants.DefaultVPNNetwork, c.clientIndex)
+	found := false
+	for _, ip := range ips {
+		if ip.Equal(addr.IP) {
+			log.Info("found expected IP address on bond device", "ip", ip.String())
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("expected IP address %s not found on bond device %s", addr.IP.String(), constants.BondDevice)
 	}
 
-	localBond := ips[0]
+	localBond := addr.IP
 	localAddress := net.UDPAddr{
 		IP:   localBond,
 		Port: tunnelControllerPort,

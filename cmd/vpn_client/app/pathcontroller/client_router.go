@@ -19,10 +19,11 @@ import (
 	"github.com/gardener/vpn2/pkg/constants"
 	"github.com/gardener/vpn2/pkg/network"
 	"github.com/gardener/vpn2/pkg/shoot_client/tunnel"
+	"github.com/gardener/vpn2/pkg/vpn_client"
 )
 
 type clientRouter struct {
-	pinger             pinger
+	pinger             vpn_client.Pinger
 	netRouter          netRouter
 	kubeAPIServerPodIP string
 
@@ -36,10 +37,6 @@ type clientRouter struct {
 
 type netRouter interface {
 	updateRouting(net.IP) error
-}
-
-type pinger interface {
-	Ping(client net.IP) error
 }
 
 func (r *clientRouter) Run(ctx context.Context, clientIPs []net.IP) error {

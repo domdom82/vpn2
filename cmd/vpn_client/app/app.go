@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/gardener/vpn2/cmd/vpn_client/app/bondcontroller"
 	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
 	"k8s.io/component-base/version/verflag"
@@ -17,6 +18,7 @@ import (
 	"github.com/gardener/vpn2/cmd/vpn_client/app/setup"
 	"github.com/gardener/vpn2/pkg/config"
 	"github.com/gardener/vpn2/pkg/constants"
+	"github.com/gardener/vpn2/pkg/network"
 	"github.com/gardener/vpn2/pkg/openvpn"
 	"github.com/gardener/vpn2/pkg/pprof"
 	"github.com/gardener/vpn2/pkg/utils"
@@ -51,6 +53,7 @@ func NewCommand() *cobra.Command {
 	verflag.AddFlags(flags)
 	cmd.PersistentFlags().BoolVar(&pprofEnabled, "enable-pprof", false, "enable pprof for profiling")
 	cmd.AddCommand(pathcontroller.NewCommand())
+	cmd.AddCommand(bondcontroller.NewCommand())
 	cmd.AddCommand(setup.NewCommand())
 	cmd.AddCommand(moveip.NewCommand())
 	return cmd
@@ -79,9 +82,10 @@ func vpnConfig(log logr.Logger, cfg config.VPNClient) openvpn.ClientValues {
 		v.SeedPodNetwork = constants.SeedPodNetworkMapped
 	}
 
-	if cfg.VPNServerIndex != "" {
-		vpnSeedServer = fmt.Sprintf("vpn-seed-server-%s", cfg.VPNServerIndex)
-		v.Device = fmt.Sprintf("tap%s", cfg.VPNServerIndex)
+	if cfg.IsHA {
+		vpnSeedServer = fmt.Sprintf("vpn-seed-server-%d", cfg.VPNServerIndex)
+		v.Device = fmt.Sprintf("tap%d", cfg.VPNServerIndex)
+		v.VPNTunnelNetwork = network.HAVPNTunnelNetwork(cfg.VPNNetwork.IP, cfg.VPNServerIndex).String()
 	}
 
 	log.Info("Built config values", "vpn-seed-sever", vpnSeedServer, "values", v)

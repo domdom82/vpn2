@@ -20,6 +20,7 @@ import (
 	"github.com/gardener/vpn2/pkg/constants"
 	"github.com/gardener/vpn2/pkg/network"
 	"github.com/gardener/vpn2/pkg/utils"
+	"github.com/gardener/vpn2/pkg/vpn_client"
 )
 
 const Name = "path-controller"
@@ -85,10 +86,10 @@ func run(ctx context.Context, _ context.CancelFunc, log logr.Logger) error {
 	}
 
 	router := &clientRouter{
-		pinger: &icmpPinger{
-			log:     log.WithName("ping"),
-			timeout: 2 * time.Second,
-			retries: 1,
+		pinger: &vpn_client.IcmpPinger{
+			Log:     log.WithName("ping"),
+			Timeout: 2 * time.Second,
+			Retries: 1,
 		},
 		ticker:             time.NewTicker(constants.PathControllerUpdateInterval),
 		kubeAPIServerPodIP: podIP,

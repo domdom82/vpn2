@@ -21,6 +21,7 @@ type ClientValues struct {
 	Endpoint             string
 	OpenVPNPort          uint
 	VPNClientIndex       int
+	VPNTunnelNetwork     string
 	IsShootClient        bool
 	IsHA                 bool
 	Device               string

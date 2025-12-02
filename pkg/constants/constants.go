@@ -29,6 +29,7 @@ const (
 	ShootNodeNetworkMapped    = constants.ReservedShootNodeNetworkMappedRange
 	SeedPodNetworkMapped      = constants.ReservedSeedPodNetworkMappedRange
 
+	BondControllerUpdateInterval  = 1 * time.Second
 	PathControllerUpdateInterval  = 2 * time.Second
 	TunnelControllerUpdateTimeout = 2 * PathControllerUpdateInterval
 

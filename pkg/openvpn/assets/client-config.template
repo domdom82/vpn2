@@ -50,5 +50,5 @@ up "/bin/sh -c '/sbin/ip route replace {{ .SeedPodNetwork }} dev $1' -- "
 
 {{- if .IsHA }}
 script-security 2
-route-up "/bin/vpn-client move-ip --src {{ .Device }} --flags nodad"
+route-up "/bin/vpn-client move-ip --cidr {{ .VPNTunnelNetwork }} --src {{ .Device }} --tgt bond0 --flags nodad"
 {{- end }}

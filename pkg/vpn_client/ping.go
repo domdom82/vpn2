@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-package pathcontroller
+package vpn_client
 
 import (
 	"bytes"
@@ -22,18 +22,22 @@ import (
 	"github.com/gardener/vpn2/pkg/network"
 )
 
-type icmpPinger struct {
-	log     logr.Logger
-	timeout time.Duration
-	retries int
+type Pinger interface {
+	Ping(client net.IP) error
+}
+
+type IcmpPinger struct {
+	Log     logr.Logger
+	Timeout time.Duration
+	Retries int
 	lastSeq atomic.Int32
 }
 
 const echoPayload = "HELLO-R-U-THERE"
 
-func (p *icmpPinger) Ping(client net.IP) error {
+func (p *IcmpPinger) Ping(client net.IP) error {
 	var err error
-	for i := 0; i < 1+p.retries; i++ {
+	for i := 0; i < 1+p.Retries; i++ {
 		err = p.pingWithTimer(client)
 		if err == nil {
 			break
@@ -41,12 +45,12 @@ func (p *icmpPinger) Ping(client net.IP) error {
 		if i == 0 {
 			go func() {
 				// send neighbor solicitation to speed up discovery the link-layer address of a neighbor
-				p.log.Info("sending neighbor solicitation", "ip", client.String())
+				p.Log.Info("sending neighbor solicitation", "ip", client.String())
 				err := p.neighborSolicitation(client)
 				if err != nil {
-					p.log.Info("neighbor solicitation failed", "error", err.Error())
+					p.Log.Info("neighbor solicitation failed", "error", err.Error())
 				} else {
-					p.log.Info("received neighbor advertisement")
+					p.Log.Info("received neighbor advertisement")
 				}
 			}()
 		}
@@ -54,32 +58,32 @@ func (p *icmpPinger) Ping(client net.IP) error {
 	return err
 }
 
-func (p *icmpPinger) pingWithTimer(client net.IP) error {
+func (p *IcmpPinger) pingWithTimer(client net.IP) error {
 	timer := time.Now()
 	err := p.ping(client)
 
 	if d := time.Since(timer); d > 100*time.Millisecond {
 		if err == nil {
-			p.log.Info("ping to client took more than 100ms", "ip", client, "duration", fmt.Sprintf("%dms", d.Milliseconds()))
+			p.Log.Info("ping to client took more than 100ms", "ip", client, "duration", fmt.Sprintf("%dms", d.Milliseconds()))
 		} else {
 			var neterr net.Error
 			if errors.As(err, &neterr) && neterr.Timeout() {
 				err = fmt.Errorf("i/o timeout")
 			}
-			p.log.Info("ping failed", "ip", client, "duration", fmt.Sprintf("%dms", d.Milliseconds()), "error", err)
+			p.Log.Info("ping failed", "ip", client, "duration", fmt.Sprintf("%dms", d.Milliseconds()), "error", err)
 		}
 	}
 	return err
 }
 
-func (p *icmpPinger) ping(client net.IP) error {
+func (p *IcmpPinger) ping(client net.IP) error {
 	c, err := icmp.ListenPacket("udp6", "")
 	if err != nil {
 		return fmt.Errorf("error listening for packets: %w", err)
 	}
 	defer c.Close()
 
-	deadline := time.Now().Add(p.timeout)
+	deadline := time.Now().Add(p.Timeout)
 	err = c.SetReadDeadline(deadline)
 	if err != nil {
 		return fmt.Errorf("error setting deadline: %w", err)
@@ -132,7 +136,7 @@ func (p *icmpPinger) ping(client net.IP) error {
 	}
 }
 
-func (p *icmpPinger) neighborSolicitation(client net.IP) error {
+func (p *IcmpPinger) neighborSolicitation(client net.IP) error {
 	if len(client) != net.IPv6len {
 		return fmt.Errorf("only usable with ipv6")
 	}
@@ -169,7 +173,7 @@ func (p *icmpPinger) neighborSolicitation(client net.IP) error {
 	}
 	defer conn.Close()
 
-	deadline := time.Now().Add(p.timeout / 2)
+	deadline := time.Now().Add(p.Timeout / 2)
 	pc := conn.IPv6PacketConn()
 	if err := pc.SetReadDeadline(deadline); err != nil {
 		return fmt.Errorf("error setting deadline: %w", err)
@@ -212,6 +216,8 @@ func (p *icmpPinger) neighborSolicitation(client net.IP) error {
 
 	switch rm.Type {
 	case ipv6.ICMPTypeNeighborAdvertisement:
+		return nil
+	case ipv6.ICMPTypeNeighborSolicitation:
 		return nil
 	default:
 		return fmt.Errorf("received unexpected ICMP message: %#v", rm)
