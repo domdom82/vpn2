@@ -29,7 +29,7 @@ type VPNClient struct {
 	IsShootClient        bool           `env:"IS_SHOOT_CLIENT"`
 	PodName              string         `env:"POD_NAME"`
 	Namespace            string         `env:"NAMESPACE"`
-	VPNServerIndex       string         `env:"VPN_SERVER_INDEX"`
+	VPNServerIndex       int            `env:"VPN_SERVER_INDEX"`
 	VPNClientIndex       int
 	IsHA                 bool          `env:"IS_HA"`
 	ReversedVPNHeader    string        `env:"REVERSED_VPN_HEADER" envDefault:"invalid-host"`
@@ -94,11 +94,19 @@ func GetVPNClientConfig() (VPNClient, error) {
 	}
 
 	if cfg.PodName != "" {
-		podNameSlice := strings.Split(cfg.PodName, "-")
-		clientIndex, err := strconv.Atoi(podNameSlice[len(podNameSlice)-1])
+		clientIndex, err := ClientIndexFromPodName(cfg.PodName)
 		if err == nil {
 			cfg.VPNClientIndex = clientIndex
 		}
 	}
 	return cfg, nil
+}
+
+func ClientIndexFromPodName(podName string) (int, error) {
+	podNameSlice := strings.Split(podName, "-")
+	clientIndex, err := strconv.Atoi(podNameSlice[len(podNameSlice)-1])
+	if err == nil {
+		return clientIndex, nil
+	}
+	return -1, err
 }

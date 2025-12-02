@@ -120,6 +120,17 @@ func MoveIPs(cidr, src, tgt string, flags []string) error {
 		return fmt.Errorf("failed to list addresses of link %s: %w", tgtLink.Attrs().Name, err)
 	}
 
+	// Clean up existing IPs in target link that are in the subnet
+	for _, addrToDel := range tgtIPs {
+		if subnet.Contains(addrToDel.IP) {
+			err = netlink.AddrDel(tgtLink, &addrToDel)
+			if err != nil {
+				return fmt.Errorf("failed to delete existing IP address %s from link %s: %w", addrToDel.String(), tgt, err)
+			}
+		}
+	}
+
+	// Move IPs from source link to target link
 	for _, addrToDel := range srcIPs {
 		if subnet.Contains(addrToDel.IP) {
 			// Copy addrToDel to avoid modifying the original
@@ -128,16 +139,6 @@ func MoveIPs(cidr, src, tgt string, flags []string) error {
 			// Set flags if provided
 			if len(flags) > 0 {
 				addrToAdd.Flags = IPAddrFlagsFromString(flags)
-			}
-
-			// Remove IP from target link if it already exists
-			for _, existingAddr := range tgtIPs {
-				if addrToAdd.Equal(existingAddr) {
-					err = netlink.AddrDel(tgtLink, &existingAddr)
-					if err != nil {
-						return fmt.Errorf("failed to delete existing IP address %s from link %s: %w", existingAddr.String(), tgt, err)
-					}
-				}
 			}
 
 			// Add IP to target link
