@@ -108,6 +108,15 @@ func ConfigureBonding(ctx context.Context, log logr.Logger, cfg *config.VPNClien
 		return fmt.Errorf("unsupported bonding mode: %s", cfg.BondingMode)
 	}
 
+	detectedMTU, err := network.GetDefaultMTU()
+	if err != nil {
+		log.Error(err, "failed to get default MTU for bond device, falling back to default", "MTU", constants.DefaultMTU)
+		bond.MTU = constants.DefaultMTU
+	} else {
+		log.Info("detected default MTU, using it for bond device", "MTU", detectedMTU)
+		bond.MTU = detectedMTU
+	}
+
 	log.Info("creating new bond device", "link", constants.BondDevice)
 	if err = netlink.LinkAdd(bond); err != nil {
 		return fmt.Errorf("failed to create %s link device: %w", constants.BondDevice, err)

@@ -14,6 +14,8 @@ import (
 
 	"github.com/gardener/vpn2/cmd/vpn_server/app/setup"
 	"github.com/gardener/vpn2/pkg/config"
+	"github.com/gardener/vpn2/pkg/constants"
+	"github.com/gardener/vpn2/pkg/network"
 	"github.com/gardener/vpn2/pkg/openvpn"
 	"github.com/gardener/vpn2/pkg/pprof"
 	"github.com/gardener/vpn2/pkg/utils"
@@ -73,6 +75,15 @@ func run(_ context.Context, log logr.Logger) error {
 	err = vpn_server.SetIPTableRules(log, cfg)
 	if err != nil {
 		return err
+	}
+
+	detectedMTU, err := network.GetDefaultMTU()
+	if err != nil {
+		log.Error(err, "could not detect MTU. Falling back to default", "MTU", constants.DefaultMTU)
+		v.TunMTU = constants.DefaultMTU
+	} else {
+		v.TunMTU = detectedMTU
+		log.Info("detected MTU", "MTU", v.TunMTU)
 	}
 
 	log.Info("writing openvpn config file", "values", v)

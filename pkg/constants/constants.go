@@ -15,6 +15,8 @@ const (
 	IPv4Family = "IPv4"
 	IPv6Family = "IPv6"
 
+	// DefaultMTU is the MTU we will fall back to if we can't get the DefaultInterface MTU
+	DefaultMTU = 1500
 	// BondDevice is the name of the bond device used for the HA deployment.
 	BondDevice = "bond0"
 	// TapDevice is the name of the tap device used for the HA VPN.

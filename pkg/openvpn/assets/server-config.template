@@ -5,6 +5,9 @@ topology subnet
 
 # Additional optimizations
 txqueuelen 1000
+tcp-nodelay
+sndbuf 134217728
+rcvbuf 134217728
 
 data-ciphers AES-256-GCM:AES-256-CBC
 
@@ -39,6 +42,7 @@ client-to-client
 duplicate-cn
 {{- end }}
 
+tun-mtu {{ .TunMTU }}
 dev {{ .Device }}
 
 {{/* Add firewall rules to block all traffic originating from the shoot cluster.
