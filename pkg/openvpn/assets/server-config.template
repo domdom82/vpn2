@@ -1,4 +1,4 @@
-verb 3
+verb {{ .Verbosity }}
 mode server
 tls-server
 topology subnet
@@ -12,7 +12,10 @@ tun-mtu {{ .TunMTU }}
 push "tun-mtu {{ .TunMTU }}"
 {{- end }}
 
-data-ciphers AES-256-GCM:AES-256-CBC
+data-ciphers {{ .DataCiphers }}
+
+# Not supported in GardenLinux and may cause issues with GCM ciphers, so we disable it for now.
+disable-dco
 
 # port can always be 1194 here as it is not visible externally. A different
 # port can be configured for the external load balancer in the service

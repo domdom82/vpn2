@@ -35,6 +35,8 @@ type SeedServerValues struct {
 	LocalNodeIP        string
 	TunMTU             int
 	MaxRoutesPerClient int
+	Verbosity          int
+	DataCiphers        string
 }
 
 func generateSeedServerConfig(cfg SeedServerValues) (string, error) {
