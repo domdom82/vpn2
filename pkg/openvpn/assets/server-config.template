@@ -41,8 +41,13 @@ dh none
 auth SHA256
 tls-auth "/srv/secrets/tlsauth/vpn.tlsauth" 0
 
+{{- if eq( .protocol "tcp") }}
 # always listen on both IPv4 & IPv6 via tcp6-server
 proto tcp6-server
+{{- else if eq( .protocol "udp") }}
+# always listen on both IPv4 & IPv6 via udp6-server
+proto udp6-server
+{{- end }}
 
 server-ipv6 {{ printf "%s" .OpenVPNNetwork }}
 
