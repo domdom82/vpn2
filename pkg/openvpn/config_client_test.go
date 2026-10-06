@@ -214,6 +214,7 @@ ca /srv/secrets/vpn-client-0/ca.crt
 					Expect(content).To(ContainSubstring(`proto udp4`))
 				})
 				It("has fragment and buffer options", func() {
+					Expect(content).To(ContainSubstring(`max-packet-size 1400`))
 					Expect(content).To(ContainSubstring(`fragment 1400 mtu`))
 					Expect(content).To(ContainSubstring(`sndbuf 16777216`))
 					Expect(content).To(ContainSubstring(`rcvbuf 16777216`))

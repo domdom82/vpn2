@@ -49,6 +49,7 @@ proto tcp6-server
 {{- else if (eq .Protocol "udp") }}
 # always listen on both IPv4 & IPv6 via udp6
 proto udp6
+max-packet-size {{ .FragmentMTU }}
 fragment {{ .FragmentMTU }} mtu
 sndbuf 16777216
 rcvbuf 16777216

@@ -43,6 +43,7 @@ proto udp4
 {{- else if (eq .IPFamily "IPv6") }}
 proto udp6
 {{- end }}
+max-packet-size {{ .FragmentMTU }}
 fragment {{ .FragmentMTU }} mtu
 sndbuf 16777216
 rcvbuf 16777216

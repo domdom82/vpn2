@@ -189,6 +189,7 @@ down "/bin/vpn-server firewall --mode down --device tun0"`))
 
 			Expect(content).To(ContainSubstring(`proto udp6`))
 			Expect(content).To(ContainSubstring(`server-ipv6 fd8f:6d53:b97a:7777::/96`))
+			Expect(content).To(ContainSubstring(`max-packet-size 1400`))
 			Expect(content).To(ContainSubstring(`fragment 1400 mtu`))
 			Expect(content).To(ContainSubstring(`sndbuf 16777216`))
 			Expect(content).To(ContainSubstring(`rcvbuf 16777216`))
@@ -204,6 +205,7 @@ down "/bin/vpn-server firewall --mode down --device tun0"`))
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(content).To(ContainSubstring(`proto udp6`))
+			Expect(content).To(ContainSubstring(`max-packet-size 1400`))
 			Expect(content).To(ContainSubstring(`fragment 1400 mtu`))
 			Expect(content).To(ContainSubstring(`
 client-to-client
