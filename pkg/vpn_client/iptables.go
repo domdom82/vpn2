@@ -17,6 +17,45 @@ import (
 	"github.com/gardener/vpn2/pkg/network"
 )
 
+// SetMarkRules installs mangle OUTPUT rules that distribute new outbound connections across shoot
+// clients by assigning per-connection fwmarks. The mark is persisted in conntrack so all packets of
+// an established connection carry the same mark without re-evaluation. Rules are idempotent
+// (AppendUnique). numClients must equal the number of ip6tnl tunnel devices created by setup.
+func SetMarkRules(log logr.Logger, numClients int) error {
+	for _, protocol := range []iptables.Protocol{iptables.ProtocolIPv4, iptables.ProtocolIPv6} {
+		ipt, err := network.NewIPTables(log, protocol)
+		if err != nil {
+			return err
+		}
+		// For each client, assign its mark to every Nth new connection (round-robin).
+		for i := range numClients {
+			mark := strconv.Itoa(constants.FwmarkBase + i)
+			if err := ipt.AppendUnique("mangle", "OUTPUT",
+				"-m", "conntrack", "--ctstate", "NEW",
+				"-m", "statistic", "--mode", "nth", "--every", strconv.Itoa(numClients), "--packet", strconv.Itoa(i),
+				"-j", "MARK", "--set-mark", mark,
+			); err != nil {
+				return fmt.Errorf("error adding mark rule for client %d: %w", i, err)
+			}
+		}
+		// Persist the mark into conntrack so subsequent packets of the same connection reuse it.
+		if err := ipt.AppendUnique("mangle", "OUTPUT",
+			"-m", "conntrack", "--ctstate", "NEW",
+			"-j", "CONNMARK", "--save-mark",
+		); err != nil {
+			return fmt.Errorf("error adding CONNMARK save rule: %w", err)
+		}
+		// Restore the mark on established/related packets so they follow the same table as the SYN.
+		if err := ipt.AppendUnique("mangle", "OUTPUT",
+			"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
+			"-j", "CONNMARK", "--restore-mark",
+		); err != nil {
+			return fmt.Errorf("error adding CONNMARK restore rule: %w", err)
+		}
+	}
+	return nil
+}
+
 func SetIPTableRules(log logr.Logger, cfg config.VPNClient) error {
 	forwardDevice := constants.TunnelDevice
 	if cfg.VPNServerIndex != "" {

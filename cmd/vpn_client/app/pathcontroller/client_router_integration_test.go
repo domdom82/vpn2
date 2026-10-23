@@ -8,6 +8,7 @@ package pathcontroller
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -41,17 +43,21 @@ const (
 
 var scenarioSeq atomic.Uint32
 
-var _ = Describe("ClientRouter resilient next hop integration", Serial, func() {
+var _ = Describe("ClientRouter policy routing integration", Serial, func() {
 	It("shoot is IPv4 only", func() {
-		runResilientNexthopScenario(true, false)
+		runPolicyRoutingScenario(true, false)
 	})
 
 	It("shoot is IPv6 only", func() {
-		runResilientNexthopScenario(false, true)
+		runPolicyRoutingScenario(false, true)
 	})
 
 	It("shoot is dual-stack IPv4 + IPv6", func() {
-		runResilientNexthopScenario(true, true)
+		runPolicyRoutingScenario(true, true)
+	})
+
+	It("new connections succeed while fwmark rules are being switched", func() {
+		runFwmarkSwitchUnderLoadScenario()
 	})
 })
 
@@ -62,7 +68,7 @@ type trafficCase struct {
 	remote  string
 }
 
-func runResilientNexthopScenario(enableIPv4, enableIPv6 bool) {
+func runPolicyRoutingScenario(enableIPv4, enableIPv6 bool) {
 	suffix := fmt.Sprintf("%04x", scenarioSeq.Add(1))
 	nsName := "pcint-" + suffix
 	vethHost := "pcvh" + suffix
@@ -83,12 +89,21 @@ func runResilientNexthopScenario(enableIPv4, enableIPv6 bool) {
 	cleanup := func() {
 		_ = runIP("route", "del", shootPodNetworkV4)
 		_ = runIP("-6", "route", "del", shootPodNetworkV6)
-		_ = runIP("nexthop", "del", "id", fmt.Sprintf("%d", constants.NexthopGroupIDforIPv4))
-		_ = runIP("nexthop", "del", "id", fmt.Sprintf("%d", constants.NexthopGroupIDforIPv6))
-		_ = runIP("nexthop", "del", "id", fmt.Sprintf("%d", constants.NexthopDeviceBaseIDforIPv4+0))
-		_ = runIP("nexthop", "del", "id", fmt.Sprintf("%d", constants.NexthopDeviceBaseIDforIPv4+1))
-		_ = runIP("nexthop", "del", "id", fmt.Sprintf("%d", constants.NexthopDeviceBaseIDforIPv6+0))
-		_ = runIP("nexthop", "del", "id", fmt.Sprintf("%d", constants.NexthopDeviceBaseIDforIPv6+1))
+		// Remove per-client routing table routes
+		for _, tableID := range []int{constants.RoutingTableBaseID, constants.RoutingTableBaseID + 1} {
+			_ = runIP("route", "flush", "table", fmt.Sprintf("%d", tableID))
+			_ = runIP("-6", "route", "flush", "table", fmt.Sprintf("%d", tableID))
+		}
+		// Remove fwmark ip rules
+		for i := range 2 {
+			mark := constants.FwmarkBase + i
+			priority := constants.FwmarkRulePriorityBase + i
+			_ = network.DeleteFWmarkRule(mark, priority, false)
+			_ = network.DeleteFWmarkRule(mark, priority, true)
+		}
+		// Flush iptables mangle OUTPUT rules installed by SetMarkRules
+		_ = exec.Command("iptables", "-t", "mangle", "-F", "OUTPUT").Run()
+		_ = exec.Command("ip6tables", "-t", "mangle", "-F", "OUTPUT").Run()
 		_ = runIP("addr", "del", seedSrc4Addr+"/32", "dev", "lo")
 		_ = runIP("-6", "addr", "del", seedSrc6Addr+"/128", "dev", "lo")
 		_ = network.DeleteLinkByName(link0)
@@ -96,7 +111,7 @@ func runResilientNexthopScenario(enableIPv4, enableIPv6 bool) {
 		_ = runIP("link", "del", vethHost)
 		_ = runIP("netns", "del", nsName)
 	}
-	// Shared tunnel/nexthop objects can survive failed runs; clear them before setup.
+	// Shared tunnel objects can survive failed runs; clear them before setup.
 	cleanup()
 	DeferCleanup(cleanup)
 
@@ -143,7 +158,15 @@ func runResilientNexthopScenario(enableIPv4, enableIPv6 bool) {
 	if enableIPv6 {
 		Expect(runIP("-n", nsName, "-6", "addr", "add", "fd00:250::2/128", "dev", "lo")).To(Succeed())
 		Expect(runIP("-6", "addr", "add", seedSrc6Addr+"/128", "dev", "lo")).To(Succeed())
+		// Back-routes: the remote namespace needs to reach seedSrc6Addr. IPv6 device-only
+		// multipath routes are not supported, so route via rt0 only; rt1 handles forward traffic.
 		Expect(runIP("-n", nsName, "-6", "route", "replace", seedSrc6Addr+"/128", "dev", rt0)).To(Succeed())
+		// Main-table forward route for IPv6 connectivity: ip6tables mangle does not work in this
+		// container (nf_conntrack_ipv6 unavailable in Docker Desktop on Mac), so marks are never
+		// set and fwmark rules never match. Add a plain main-table route so the echo server is
+		// reachable; per-client table routes and ip rules are verified by the assertions above.
+		// IPv6 device-only multipath is not supported, so route via link0 only.
+		Expect(runIP("-6", "route", "replace", "fd00:250::2/128", "dev", link0)).To(Succeed())
 		stop6, err := startNamespaceEchoServer(nsName, "tcp6", shootTCP6Addr)
 		Expect(err).NotTo(HaveOccurred())
 		DeferCleanup(stop6)
@@ -159,67 +182,152 @@ func runResilientNexthopScenario(enableIPv4, enableIPv6 bool) {
 		log:              logr.Discard(),
 	}
 	Expect(netRouter.setupRouting(clientIPs)).To(Succeed())
-	Expect(enableL4ECMPHashing()).To(Succeed())
+
+	By("verifying per-client routing tables are populated")
+	for i, clientIP := range clientIPs {
+		clientIndex := network.ClientIndexFromBondingShootClientIP(clientIP.AsSlice())
+		tableID := constants.RoutingTableBaseID + clientIndex
+		linkName := network.BondIP6TunnelLinkName(i)
+		for _, cidr := range shootPodNetworks {
+			ipFamily := "-4"
+			if cidr.IP.To4() == nil {
+				ipFamily = "-6"
+			}
+			out, err := runIPOut(ipFamily, "route", "show", "table", fmt.Sprintf("%d", tableID))
+			Expect(err).NotTo(HaveOccurred(), "table %d should be queryable", tableID)
+			Expect(out).To(ContainSubstring(linkName), "table %d should route via %s", tableID, linkName)
+		}
+	}
+
+	By("verifying fwmark ip rules are installed")
+	for i := range clientIPs {
+		clientIndex := network.ClientIndexFromBondingShootClientIP(clientIPs[i].AsSlice())
+		mark := constants.FwmarkBase + clientIndex
+		tableID := constants.RoutingTableBaseID + clientIndex
+		for _, ipv6 := range []bool{false, true} {
+			family := netlink.FAMILY_V4
+			if ipv6 {
+				family = netlink.FAMILY_V6
+			}
+			rules, err := netlink.RuleList(family)
+			Expect(err).NotTo(HaveOccurred())
+			found := false
+			for _, r := range rules {
+				if r.Mark == uint32(mark) && r.Table == tableID { //nolint:gosec
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "fwmark rule for mark %d → table %d (ipv6=%v) should exist", mark, tableID, ipv6)
+		}
+	}
 
 	router := &clientRouter{netRouter: netRouter, log: logr.Discard()}
 
-	By("initially both links can carry traffic")
-	Expect(netRouter.setNexthopHealth(clientIPs[1], false, clientIPs)).To(Succeed())
+	// trafficV4 is the subset of traffic cases that use IPv4; only these can be used for
+	// fwmark-based routing tests because ip6tables mangle OUTPUT does not fire in the
+	// Docker Desktop on Mac kernel (nf_conntrack_ipv6 is unavailable).
+	var trafficV4 []trafficCase
 	for _, tc := range traffic {
-		Eventually(func() error {
-			return runShortEcho(tc.network, tc.localIP, tc.remote, "initial-link0-"+tc.name)
-		}, "5s", "200ms").Should(Succeed())
+		if tc.network == "tcp4" {
+			trafficV4 = append(trafficV4, tc)
+		}
 	}
-	Expect(netRouter.setNexthopHealth(clientIPs[1], true, clientIPs)).To(Succeed())
-	Expect(netRouter.setNexthopHealth(clientIPs[0], false, clientIPs)).To(Succeed())
-	for _, tc := range traffic {
-		Eventually(func() error {
-			return runShortEcho(tc.network, tc.localIP, tc.remote, "initial-link1-"+tc.name)
-		}, "5s", "200ms").Should(Succeed())
-	}
-	Expect(netRouter.setNexthopHealth(clientIPs[0], true, clientIPs)).To(Succeed())
 
-	By("an unhealthy link is set to underweight for graceful migration")
-	router.reconcileNexthopGroup(clientIPs[1], false, clientIPs)
-	health, err := netRouter.getNexthopHealth(clientIPs)
+	By("echo servers are reachable before any health changes")
+	for _, tc := range traffic {
+		Eventually(func() error {
+			return runShortEcho(tc.network, tc.localIP, tc.remote, "pre-check-"+tc.name)
+		}, "5s", "200ms").Should(Succeed())
+	}
+
+	if len(trafficV4) > 0 {
+		By("initially each IPv4 link can carry traffic individually")
+		Expect(netRouter.setShootClientHealth(clientIPs[1], false, clientIPs)).To(Succeed())
+		for _, tc := range trafficV4 {
+			Eventually(func() error {
+				return runShortEcho(tc.network, tc.localIP, tc.remote, "initial-link0-"+tc.name)
+			}, "5s", "200ms").Should(Succeed())
+		}
+		Expect(netRouter.setShootClientHealth(clientIPs[1], true, clientIPs)).To(Succeed())
+		Expect(netRouter.setShootClientHealth(clientIPs[0], false, clientIPs)).To(Succeed())
+		for _, tc := range trafficV4 {
+			Eventually(func() error {
+				return runShortEcho(tc.network, tc.localIP, tc.remote, "initial-link1-"+tc.name)
+			}, "5s", "200ms").Should(Succeed())
+		}
+		Expect(netRouter.setShootClientHealth(clientIPs[0], true, clientIPs)).To(Succeed())
+	}
+
+	By("an unhealthy link is redirected via the surviving client's routing table")
+	router.reconcileRoutingPolicy(clientIPs[1], false, clientIPs)
+	health, err := netRouter.getShootClientHealth(clientIPs)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(health[clientIPs[0]]).To(BeTrue())
 	Expect(health[clientIPs[1]]).To(BeFalse())
 
+	By("verifying fwmark rule for unhealthy client now points to surviving client's table")
+	{
+		clientIndex1 := network.ClientIndexFromBondingShootClientIP(clientIPs[1].AsSlice())
+		mark1 := constants.FwmarkBase + clientIndex1
+		clientIndex0 := network.ClientIndexFromBondingShootClientIP(clientIPs[0].AsSlice())
+		survivingTableID := constants.RoutingTableBaseID + clientIndex0
+		for _, ipv6 := range []bool{false, true} {
+			family := netlink.FAMILY_V4
+			if ipv6 {
+				family = netlink.FAMILY_V6
+			}
+			rules, err := netlink.RuleList(family)
+			Expect(err).NotTo(HaveOccurred())
+			found := false
+			for _, r := range rules {
+				if r.Mark == uint32(mark1) && r.Table == survivingTableID { //nolint:gosec
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "mark %d should be redirected to surviving table %d (ipv6=%v)", mark1, survivingTableID, ipv6)
+		}
+	}
+
 	By("persistent connections are created on the remaining good link")
 	tx0Before, tx1Before, _ := txPackets(link0, link1)
-	conns := make([]net.Conn, 0, len(traffic))
-	for _, tc := range traffic {
+	conns := make([]net.Conn, 0, len(trafficV4))
+	for _, tc := range trafficV4 {
 		conn, err := dialWithRetry(tc.network, tc.localIP, tc.remote, 5*time.Second)
 		Expect(err).NotTo(HaveOccurred())
 		conns = append(conns, conn)
 		Expect(writeReadEcho(conn, "persist-before-re-add-"+tc.name)).To(Succeed())
 	}
-	tx0After, tx1After, err := txPackets(link0, link1)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(tx0After - tx0Before).To(BeNumerically(">", 0))
-	Expect(tx1After).To(Equal(tx1Before))
+	if len(trafficV4) > 0 {
+		tx0After, tx1After, err := txPackets(link0, link1)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(tx0After - tx0Before).To(BeNumerically(">", 0))
+		Expect(tx1After).To(Equal(tx1Before))
+	}
 
 	By("re-adding the recovered link does not disturb existing persistent connections")
-	tx0Before, tx1Before, err = txPackets(link0, link1)
-	fmt.Fprintf(GinkgoWriter, "tx0Before: %d tx1Before: %d\n", tx0Before, tx1Before)
-	Expect(err).NotTo(HaveOccurred())
-	router.reconcileNexthopGroup(clientIPs[1], true, clientIPs)
-	for i := 0; i < 20; i++ {
+	router.reconcileRoutingPolicy(clientIPs[1], true, clientIPs)
+	if len(conns) > 0 {
+		tx0Before, tx1Before, err = txPackets(link0, link1)
+		fmt.Fprintf(GinkgoWriter, "tx0Before: %d tx1Before: %d\n", tx0Before, tx1Before)
+		Expect(err).NotTo(HaveOccurred())
+		for i := 0; i < 20; i++ {
+			for _, conn := range conns {
+				Expect(writeReadEcho(conn, fmt.Sprintf("persist-after-re-add-%d", i))).To(Succeed())
+			}
+		}
+		tx0After, tx1After, err := txPackets(link0, link1)
+		Expect(err).NotTo(HaveOccurred())
+		fmt.Fprintf(GinkgoWriter, "tx0After: %d tx1After: %d\n", tx0After, tx1After)
+		Expect((tx0After - tx0Before) + (tx1After - tx1Before)).To(BeNumerically(">", 0))
 		for _, conn := range conns {
-			Expect(writeReadEcho(conn, fmt.Sprintf("persist-after-re-add-%d", i))).To(Succeed())
+			Expect(conn.Close()).To(Succeed())
 		}
 	}
-	tx0After, tx1After, err = txPackets(link0, link1)
-	Expect(err).NotTo(HaveOccurred())
-	fmt.Fprintf(GinkgoWriter, "tx0After: %d tx1After: %d\n", tx0After, tx1After)
-	Expect((tx0After - tx0Before) + (tx1After - tx1Before)).To(BeNumerically(">", 0))
-	for _, conn := range conns {
-		Expect(conn.Close()).To(Succeed())
-	}
 
-	By("new connections are distributed over both links and rebalance near 50/50")
-	for _, tc := range traffic {
+	By("new IPv4 connections are distributed over both links and rebalance near 50/50")
+	for _, tc := range trafficV4 {
 		c0, c1, unknown, err := sampleConnectionDistribution(tc.network, tc.localIP, tc.remote, link0, link1, 160)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(c0).To(BeNumerically(">", 0))
@@ -231,6 +339,155 @@ func runResilientNexthopScenario(enableIPv4, enableIPv6 bool) {
 		Expect(ratio).To(BeNumerically(">", 0.30))
 		Expect(ratio).To(BeNumerically("<", 0.70))
 	}
+}
+
+func runFwmarkSwitchUnderLoadScenario() {
+	suffix := fmt.Sprintf("%04x", scenarioSeq.Add(1))
+	nsName := "pcfws-" + suffix
+	vethHost := "fwvh" + suffix
+	vethPeer := "fwvp" + suffix
+	rt0 := "fwr0" + suffix
+	rt1 := "fwr1" + suffix
+
+	clientNetIPs := []net.IP{
+		network.BondingShootClientIP(network.ParseIPNetIgnoreError(constants.DefaultVPNNetwork.String()).ToIPNet(), 0),
+		network.BondingShootClientIP(network.ParseIPNetIgnoreError(constants.DefaultVPNNetwork.String()).ToIPNet(), 1),
+	}
+	clientIPs, err := network.IPtoAddr(clientNetIPs)
+	Expect(err).NotTo(HaveOccurred())
+	link0 := network.BondIP6TunnelLinkName(0)
+	link1 := network.BondIP6TunnelLinkName(1)
+
+	const (
+		localAddr  = "10.252.0.1"
+		remoteAddr = "10.252.0.2"
+		echoAddr   = remoteAddr + ":29080"
+	)
+
+	cleanup := func() {
+		for _, tableID := range []int{constants.RoutingTableBaseID, constants.RoutingTableBaseID + 1} {
+			_ = runIP("route", "flush", "table", fmt.Sprintf("%d", tableID))
+		}
+		for i := range 2 {
+			mark := constants.FwmarkBase + i
+			priority := constants.FwmarkRulePriorityBase + i
+			_ = network.DeleteFWmarkRule(mark, priority, false)
+			_ = network.DeleteFWmarkRule(mark, priority, true)
+		}
+		_ = exec.Command("iptables", "-t", "mangle", "-F", "OUTPUT").Run()
+		_ = exec.Command("ip6tables", "-t", "mangle", "-F", "OUTPUT").Run()
+		_ = runIP("addr", "del", localAddr+"/32", "dev", "lo")
+		_ = network.DeleteLinkByName(link0)
+		_ = network.DeleteLinkByName(link1)
+		_ = runIP("link", "del", vethHost)
+		_ = runIP("netns", "del", nsName)
+	}
+	cleanup()
+	DeferCleanup(cleanup)
+
+	Expect(runIP("netns", "add", nsName)).To(Succeed())
+	Expect(runIP("link", "add", vethHost, "type", "veth", "peer", "name", vethPeer)).To(Succeed())
+	Expect(runIP("link", "set", vethPeer, "netns", nsName)).To(Succeed())
+
+	Expect(runIP("addr", "add", "2001:db8:2::101/64", "dev", vethHost)).To(Succeed())
+	Expect(runIP("addr", "add", "2001:db8:2::102/64", "dev", vethHost)).To(Succeed())
+	Expect(runIP("link", "set", vethHost, "up")).To(Succeed())
+
+	Expect(runIP("-n", nsName, "link", "set", "lo", "up")).To(Succeed())
+	Expect(runIP("-n", nsName, "addr", "add", "2001:db8:2::201/64", "dev", vethPeer)).To(Succeed())
+	Expect(runIP("-n", nsName, "addr", "add", "2001:db8:2::202/64", "dev", vethPeer)).To(Succeed())
+	Expect(runIP("-n", nsName, "link", "set", vethPeer, "up")).To(Succeed())
+
+	Expect(runIP("-6", "tunnel", "add", link0, "mode", "any", "local", "2001:db8:2::101", "remote", "2001:db8:2::201", "dev", vethHost)).To(Succeed())
+	Expect(runIP("-6", "tunnel", "add", link1, "mode", "any", "local", "2001:db8:2::102", "remote", "2001:db8:2::202", "dev", vethHost)).To(Succeed())
+	Expect(runIP("link", "set", link0, "up")).To(Succeed())
+	Expect(runIP("link", "set", link1, "up")).To(Succeed())
+
+	Expect(runIP("-n", nsName, "-6", "tunnel", "add", rt0, "mode", "any", "local", "2001:db8:2::201", "remote", "2001:db8:2::101", "dev", vethPeer)).To(Succeed())
+	Expect(runIP("-n", nsName, "-6", "tunnel", "add", rt1, "mode", "any", "local", "2001:db8:2::202", "remote", "2001:db8:2::102", "dev", vethPeer)).To(Succeed())
+	Expect(runIP("-n", nsName, "link", "set", rt0, "up")).To(Succeed())
+	Expect(runIP("-n", nsName, "link", "set", rt1, "up")).To(Succeed())
+
+	Expect(disableRPFilter(vethHost)).To(Succeed())
+	Expect(runInNetns(nsName, "sh", "-c",
+		"echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter; "+
+			"echo 0 > /proc/sys/net/ipv4/conf/default/rp_filter; "+
+			"echo 0 > /proc/sys/net/ipv4/conf/lo/rp_filter; "+
+			"echo 0 > /proc/sys/net/ipv4/conf/"+rt0+"/rp_filter; "+
+			"echo 0 > /proc/sys/net/ipv4/conf/"+rt1+"/rp_filter; "+
+			"echo 0 > /proc/sys/net/ipv4/conf/"+vethPeer+"/rp_filter")).To(Succeed())
+
+	Expect(runIP("-n", nsName, "addr", "add", remoteAddr+"/32", "dev", "lo")).To(Succeed())
+	Expect(runIP("addr", "add", localAddr+"/32", "dev", "lo")).To(Succeed())
+	Expect(runIP("-n", nsName, "route", "replace", localAddr+"/32", "nexthop", "dev", rt0, "nexthop", "dev", rt1)).To(Succeed())
+
+	stop, err := startNamespaceEchoServer(nsName, "tcp4", echoAddr)
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(stop)
+
+	netRouter := &netlinkRouter{
+		shootPodNetworks: []network.CIDR{network.ParseIPNetIgnoreError(remoteAddr + "/32")},
+		seedPodNetwork:   network.ParseIPNetIgnoreError("10.10.0.0/16"),
+		log:              logr.Discard(),
+	}
+	Expect(netRouter.setupRouting(clientIPs)).To(Succeed())
+
+	By("echo server is reachable before switching")
+	Eventually(func() error {
+		return runShortEcho("tcp4", localAddr, echoAddr, "pre-switch")
+	}, "5s", "200ms").Should(Succeed())
+
+	By("new connections all succeed while fwmark rules are continuously switched")
+	// The switcher goroutine alternates the health state of client 1 as fast as possible,
+	// which causes setShootClientHealth to add the new rule then delete the old one on every
+	// iteration. The loader goroutines each open a new connection on every iteration.
+	// No connection attempt should fail due to a window where no matching rule exists.
+	const (
+		switchDuration = 3 * time.Second
+		numLoaders     = 8
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), switchDuration)
+	defer cancel()
+
+	// switcher: flip health of client1 back and forth as fast as possible
+	var switchCount atomic.Int64
+	go func() {
+		healthy := false
+		for ctx.Err() == nil {
+			_ = netRouter.setShootClientHealth(clientIPs[1], healthy, clientIPs)
+			healthy = !healthy
+			switchCount.Add(1)
+		}
+		// Leave both clients healthy at the end so cleanup rules are in their canonical state.
+		_ = netRouter.setShootClientHealth(clientIPs[1], true, clientIPs)
+	}()
+
+	// loaders: each goroutine opens a new connection and does one echo on every iteration
+	var (
+		totalAttempts atomic.Int64
+		totalFailures atomic.Int64
+		wg            sync.WaitGroup
+	)
+	for range numLoaders {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; ctx.Err() == nil; i++ {
+				totalAttempts.Add(1)
+				if err := runShortEcho("tcp4", localAddr, echoAddr, fmt.Sprintf("load-%d", i)); err != nil {
+					totalFailures.Add(1)
+					fmt.Fprintf(GinkgoWriter, "connection failed: %v\n", err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	fmt.Fprintf(GinkgoWriter, "switches: %d, attempts: %d, failures: %d\n",
+		switchCount.Load(), totalAttempts.Load(), totalFailures.Load())
+	Expect(totalAttempts.Load()).To(BeNumerically(">", 0))
+	Expect(totalFailures.Load()).To(Equal(int64(0)))
 }
 
 func runIP(args ...string) error {
@@ -277,16 +534,6 @@ func disableRPFilter(vethHost string) error {
 			}
 			return fmt.Errorf("failed to set %s: %w", p, err)
 		}
-	}
-	return nil
-}
-
-func enableL4ECMPHashing() error {
-	if err := os.WriteFile("/proc/sys/net/ipv4/fib_multipath_hash_policy", []byte(constants.ECMPHashPolicyL4), 0o644); err != nil {
-		return fmt.Errorf("failed to set IPv4 fib_multipath_hash_policy: %w", err)
-	}
-	if err := os.WriteFile("/proc/sys/net/ipv6/fib_multipath_hash_policy", []byte(constants.ECMPHashPolicyL4), 0o644); err != nil {
-		return fmt.Errorf("failed to set IPv6 fib_multipath_hash_policy: %w", err)
 	}
 	return nil
 }
